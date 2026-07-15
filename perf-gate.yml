@@ -1,0 +1,22 @@
+# Performance Gate configuration.
+# Everything here runs on your own machine / runner. No data leaves the network.
+
+llm:
+  enabled: true
+  backend: ollama            # ollama | openai  (openai = vLLM or Azure OpenAI private endpoint)
+  model: qwen2.5-coder:7b    # a code-specialised local model; swap for 14b/32b for stronger reasoning
+  base_url: ""               # blank = backend default (http://localhost:11434 for ollama)
+  timeout: 60
+  max_findings: 40           # cap LLM calls per push so reviews stay fast
+
+knowledge_base:
+  index_path: .perf-gate/kb-index.json   # optional local PDF index; git-ignored, built with `perf-gate build-kb`
+
+gate:
+  fail_on: HIGH              # fail the push/build if any finding is at or above this severity
+                             # CRITICAL | HIGH | MEDIUM | LOW | INFO | NONE (NONE = report only, never fail)
+  ignore_rules: []           # e.g. ["fe.inline_function"]
+  ignore_paths:              # substrings; changes under these paths are skipped
+    - test/
+    - tests/
+    - generated/

@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# Local knowledge-base index built from your reference PDF.
+# NEVER commit this - it contains text from a copyrighted book.
+.perf-gate/
+*kb-index.json
+perf-gate-findings.json

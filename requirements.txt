@@ -1,0 +1,4 @@
+# Runtime: only PyYAML is required (everything else is Python stdlib).
+PyYAML>=6.0
+# Optional: only needed for `perf-gate build-kb <pdf>` to index a reference PDF.
+pypdf>=4.0

@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "perf-gate-agent"
+version = "1.0.0"
+description = "Static, on-prem performance review gate that runs on every code push"
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+# Only needed to build a KB index from a reference PDF. Everything else is stdlib.
+kb = ["pypdf>=4.0"]
+
+[project.scripts]
+perf-gate = "perf_gate.cli:main"
+
+[tool.setuptools]
+packages = ["perf_gate", "perf_gate.detectors", "perf_gate.knowledge", "perf_gate.llm"]

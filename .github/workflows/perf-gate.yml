@@ -1,0 +1,48 @@
+name: Performance Gate
+
+# Runs on every push. Use a SELF-HOSTED runner inside your network so the local
+# LLM (Ollama) is reachable and nothing leaves your infrastructure.
+on:
+  push:
+  pull_request:
+
+jobs:
+  perf-gate:
+    # Change to `self-hosted` (recommended, keeps LLM on-prem). `ubuntu-latest`
+    # also works - it just runs static-only unless a local model is reachable.
+    runs-on: self-hosted
+    permissions:
+      contents: read
+      pull-requests: write   # allows posting the review as a commit/PR comment
+    steps:
+      - name: Check out code (with history for diffing)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0     # full history so base..head diff works
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Performance Gate
+        run: pip install -e .
+
+      - name: Run Performance Gate on changed lines
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Point at your on-prem Ollama if it is not on localhost:
+          # OLLAMA_HOST: http://ollama.internal:11434
+          # PERF_GATE_MODEL: qwen2.5-coder:14b
+          PERF_GATE_BASE: ${{ github.event.before }}
+          PERF_GATE_HEAD: ${{ github.sha }}
+        run: |
+          perf-gate review --repo . --json perf-gate-findings.json
+
+      - name: Upload findings artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-gate-findings
+          path: perf-gate-findings.json
+          if-no-files-found: ignore
