@@ -65,6 +65,7 @@ less work, not find a bigger model.
 ```bash
 # 1. Install (only PyYAML is required at runtime; everything else is stdlib)
 pip install -e .
+#    Windows users: see docs/WINDOWS.md for a full step-by-step walkthrough.
 
 # 2. (Optional) run a local model for Stage 2 — keeps everything on-prem
 ollama pull qwen2.5-coder:7b     # code-specialised; use :14b or :32b for stronger reasoning
