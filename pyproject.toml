@@ -15,6 +15,9 @@ dependencies = [
 [project.optional-dependencies]
 # Only needed to build a KB index from a reference PDF. Everything else is stdlib.
 kb = ["pypdf>=4.0"]
+# Only needed if you point history at Postgres (PERF_GATE_DB_URL). SQLite (stdlib)
+# is the default and needs nothing extra. Jira uses stdlib urllib - no dependency.
+postgres = ["psycopg2-binary>=2.9"]
 
 [project.scripts]
 perf-gate = "perf_gate.cli:main"

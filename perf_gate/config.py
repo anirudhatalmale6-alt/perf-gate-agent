@@ -29,6 +29,27 @@ DEFAULTS = {
         "ignore_rules": [],                # rule_ids to silence, e.g. ["fe.inline_function"]
         "ignore_paths": ["test/", "tests/", "generated/"],
     },
+    "history": {
+        # Record every run into a local DB to track findings + fix-rate over time.
+        "enabled": False,
+        # Default backend is SQLite (a local file). For Postgres, set the env var
+        # PERF_GATE_DB_URL - it is operator-only and cannot be set from the repo.
+        "sqlite_path": ".perf-gate/history.db",
+        "store_code": True,                # store the offending line locally (never leaves box)
+    },
+    "jira": {
+        # Auto-create tickets for high-severity findings in your on-prem Jira.
+        # The base URL + API token are operator-only (env PERF_GATE_JIRA_URL /
+        # PERF_GATE_JIRA_TOKEN); they are NEVER read from this file.
+        "enabled": False,
+        "project_key": "YOUR-PROJECT-KEY",  # placeholder - set to your Jira project key
+        "issue_type": "Bug",
+        "min_severity": "CRITICAL",         # file tickets at/above this severity
+        "labels": ["performance-gate"],
+        "include_code": True,               # include the offending line in the ticket body
+        "auth": "bearer",                   # bearer (Data Center PAT) | basic
+        "timeout": 20,
+    },
 }
 
 _SEVERITY_RANK = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "INFO": 4, "NONE": 99}
@@ -49,6 +70,19 @@ class Config:
     @property
     def kb_index_path(self):
         return self.raw["knowledge_base"]["index_path"]
+
+    @property
+    def history(self):
+        return self.raw["history"]
+
+    @property
+    def jira(self):
+        return self.raw["jira"]
+
+    @staticmethod
+    def db_url() -> str:
+        """Postgres connection URL, if any. Operator-only (env), never from repo."""
+        return os.environ.get("PERF_GATE_DB_URL", "")
 
     def should_fail(self, severities: List[str]) -> bool:
         threshold = _SEVERITY_RANK.get(str(self.gate.get("fail_on", "HIGH")).upper(), 1)
@@ -141,6 +175,25 @@ def load(repo_root: str, path: str = "perf-gate.yml") -> Config:
     # only the operator can change them, via the env vars handled just below.
     cfg["llm"]["backend"] = DEFAULTS["llm"]["backend"]
     cfg["llm"]["base_url"] = DEFAULTS["llm"]["base_url"]
+    # SECURITY: the history DB path is a local file we WRITE to. A scanned repo
+    # must not be able to point that write elsewhere (path traversal / clobber),
+    # so the SQLite path is operator-only: forced back to the default here, and
+    # only an operator env var may override it. The Postgres URL and all Jira
+    # endpoint/token values are read from the process env in their own modules and
+    # are likewise never taken from this repo-supplied file.
+    cfg["history"]["sqlite_path"] = DEFAULTS["history"]["sqlite_path"]
+    if os.environ.get("PERF_GATE_DB_PATH"):
+        cfg["history"]["sqlite_path"] = os.environ["PERF_GATE_DB_PATH"]
+    if os.environ.get("PERF_GATE_HISTORY", "").strip().lower() in ("1", "true", "yes", "on"):
+        cfg["history"]["enabled"] = True
+    if os.environ.get("PERF_GATE_JIRA", "").strip().lower() in ("1", "true", "yes", "on"):
+        cfg["jira"]["enabled"] = True
+    # SECURITY: strip any endpoint/credential keys a scanned repo tried to smuggle
+    # into the jira config. These are ALWAYS read from the operator environment
+    # (PERF_GATE_JIRA_URL / PERF_GATE_JIRA_TOKEN / PERF_GATE_JIRA_USER), so a repo
+    # can never point ticket creation at an outside host.
+    for _k in ("base_url", "url", "token", "api_token", "host", "user", "password"):
+        cfg["jira"].pop(_k, None)
     # Env overrides (now including anything loaded from .env above).
     if os.environ.get("PERF_GATE_BASE_URL"):
         cfg["llm"]["base_url"] = os.environ["PERF_GATE_BASE_URL"]

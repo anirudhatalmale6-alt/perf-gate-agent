@@ -81,6 +81,10 @@ perf-gate review --json findings.json
 
 # Write a self-contained HTML report for stakeholders (open in any browser)
 perf-gate review --html perf-report.html
+
+# Track findings over time and auto-file Jira tickets (both optional, both on-prem)
+perf-gate review --all --record --jira    # record run + file tickets for critical findings
+perf-gate trends --html trends.html       # fix-rate trend report over all recorded runs
 ```
 
 ### Languages covered
@@ -117,6 +121,48 @@ The workflow reviews the pushed diff, writes a summary to the Actions run, posts
 the report as a commit comment, and uploads the JSON findings as an artifact.
 
 ---
+
+## Tracking findings over time + Jira tickets (optional, on-prem)
+
+Two optional integrations, both fully on-prem. Full step-by-step local setup is in
+[`docs/HISTORY_AND_JIRA.md`](docs/HISTORY_AND_JIRA.md); the short version:
+
+**Findings history & fix-rate trends.** Record each run and see the trend over time.
+Default backend is **SQLite** (a local file — zero setup); point it at an on-prem
+**Postgres** with one env var when several runners/people share a history.
+
+```bash
+perf-gate review --all --record            # record this run
+perf-gate trends --html trends.html        # table + fix-rate + bar chart (stakeholder HTML)
+
+# Postgres instead of SQLite (operator env var — never set from the scanned repo):
+pip install 'perf-gate-agent[postgres]'
+export PERF_GATE_DB_URL="postgresql://perfgate:perfgate@localhost:5432/perfgate"
+```
+
+Each finding gets a stable fingerprint from `(rule, file, normalised code)` — not
+the line number — so it's still recognised as the same issue after unrelated edits.
+`fix_rate = resolved / all-distinct-findings-ever-seen`.
+
+**On-prem Jira auto-tickets.** File a ticket for each new finding at/above a
+severity (default CRITICAL), de-duplicated so the same issue never opens twice.
+
+```bash
+# Endpoint + token are operator-only env vars (never read from the repo):
+export PERF_GATE_JIRA_URL="https://jira.your-company.local"
+export PERF_GATE_JIRA_TOKEN="<Jira Data Center Personal Access Token>"
+perf-gate review --all --jira --record     # --record remembers filed tickets for de-dup
+```
+
+Set `project_key`, `issue_type`, `min_severity`, `labels` in `perf-gate.yml`. With
+no URL/token set, `--jira` runs in **dry-run** and just prints the tickets it would
+file — so you can validate the flow before wiring credentials.
+
+Security: the DB URL, SQLite path, Jira URL and token all come **only** from the
+operator environment and can never be set from the scanned repo — the same
+data-exfiltration guard the LLM endpoint uses. The history DB stores only
+source-derived data (no production/customer data); set `history.store_code: false`
+to store fingerprints with no code at all.
 
 ## Using your reference PDF as the knowledge base
 
@@ -198,7 +244,9 @@ perf_gate/
   cli.py                 # entry point: review / build-kb
   diff.py                # git diff -> changed files + changed line ranges
   config.py              # perf-gate.yml + env, gate policy
-  report.py              # Markdown / JSON / HTML, commit-comment + job summary
+  storage.py             # findings history + fix-rate trends (SQLite / Postgres)
+  jira_client.py         # on-prem Jira auto-tickets (REST v2, operator-only creds)
+  report.py              # Markdown / JSON / HTML + trend HTML, commit-comment + job summary
   detectors/
     base.py              # Finding + loop-scope scanner
     java_rules.py        # Java / Spring / JPA detectors

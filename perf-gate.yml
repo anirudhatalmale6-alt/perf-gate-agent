@@ -20,3 +20,28 @@ gate:
     - test/
     - tests/
     - generated/
+
+history:
+  # Track findings + fix-rate over time. Default backend is SQLite (a local file).
+  # For Postgres, set the env var PERF_GATE_DB_URL (operator-only; never read from
+  # this repo file). Then run `perf-gate review --all --record` and
+  # `perf-gate trends` to see the trend. Nothing here touches the network.
+  enabled: false
+  store_code: true           # store the offending line locally (stays on-box). false = fingerprints only
+
+jira:
+  # Auto-create tickets in your ON-PREM Jira (Data Center / Server) for
+  # high-severity findings. PLACEHOLDERS below are the only repo-side settings;
+  # the Jira base URL + API token are operator-only and set as ENV VARS so a
+  # scanned repo can never redirect findings off your network:
+  #   export PERF_GATE_JIRA_URL="https://jira.your-company.local"
+  #   export PERF_GATE_JIRA_TOKEN="<Jira Data Center Personal Access Token>"
+  # With no URL/token set it runs in dry-run and just prints the tickets it would file.
+  enabled: false
+  project_key: "YOUR-PROJECT-KEY"   # <-- placeholder: your Jira project key, e.g. PERF
+  issue_type: Bug                   # Jira issue type to create
+  min_severity: CRITICAL            # file tickets at/above this severity
+  labels:
+    - performance-gate
+  include_code: true                # include the offending line in the ticket body (goes only to your Jira)
+  auth: bearer                      # bearer = Data Center Personal Access Token | basic (needs PERF_GATE_JIRA_USER)

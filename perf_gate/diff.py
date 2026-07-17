@@ -43,6 +43,20 @@ def resolve_range(repo: str, base: Optional[str], head: Optional[str]) -> (str, 
         return EMPTY_TREE, head
 
 
+def current_ref(repo: str) -> (str, str):
+    """Best-effort (short_sha, branch) for labelling a recorded run. Never raises."""
+    sha, branch = "", ""
+    try:
+        sha = _run(["git", "rev-parse", "--short", "HEAD"], repo).strip()
+    except (subprocess.CalledProcessError, OSError):
+        pass
+    try:
+        branch = _run(["git", "rev-parse", "--abbrev-ref", "HEAD"], repo).strip()
+    except (subprocess.CalledProcessError, OSError):
+        pass
+    return sha, branch
+
+
 def changed_line_ranges(repo: str, base: str, head: str) -> Dict[str, Set[int]]:
     """Map each changed file to the set of line numbers added/modified on the head side."""
     out = _run(["git", "diff", "--unified=0", "--no-color",

@@ -18,9 +18,11 @@ from typing import Dict, List, Set
 from . import config as config_mod
 from . import diff as diff_mod
 from . import report as report_mod
+from . import jira_client
 from .detectors import analyze_file, SUPPORTED_EXTS, language_for
 from .knowledge import kb as kb_mod
 from .llm import LLMClient, review as llm_review
+from .storage import Store
 
 
 def _collect_all_files(repo: str) -> Dict[str, str]:
@@ -125,6 +127,43 @@ def cmd_review(args) -> int:
             fh.write(report_mod.to_html(findings, llm_used, os.path.basename(repo)))
         print(f"\nHTML report written to {args.html}")
 
+    # 4b. Optional integrations: history DB (findings over time) + Jira tickets.
+    #     Both share one Store so ticket de-duplication uses the same DB. Neither
+    #     is allowed to break the gate - failures here are reported, not fatal.
+    record = cfg.history.get("enabled", False) or getattr(args, "record", False)
+    do_jira = cfg.jira.get("enabled", False) or getattr(args, "jira", False)
+    store = None
+    if record or do_jira:
+        try:
+            store = Store(url=config_mod.Config.db_url(),
+                          sqlite_path=cfg.history.get("sqlite_path", ".perf-gate/history.db"),
+                          store_code=cfg.history.get("store_code", True))
+            store.connect()
+        except Exception as e:  # noqa: BLE001 - integrations must never block the gate
+            print(f"\n[history/jira] database unavailable ({e}); skipping.")
+            store = None
+
+    if record and store is not None:
+        try:
+            sha, branch = diff_mod.current_ref(repo)
+            engine = "static+llm" if llm_used else "static"
+            run_id = store.record_run(os.path.basename(repo), sha, branch, findings, engine)
+            fr = store.fix_rate(os.path.basename(repo))
+            print(f"\nHistory: recorded run #{run_id} "
+                  f"({len(findings)} finding(s)). Fix-rate to date: "
+                  f"{fr['resolved']}/{fr['distinct']} resolved "
+                  f"({fr['fix_rate']*100:.0f}%) across {fr['runs']} run(s).")
+        except Exception as e:  # noqa: BLE001
+            print(f"\n[history] could not record run: {e}")
+
+    if do_jira:
+        jcfg = jira_client.JiraConfig(cfg.jira)
+        result = jira_client.sync_findings(jcfg, findings, store)
+        print("\n" + jira_client.format_summary(result))
+
+    if store is not None:
+        store.close()
+
     # 5. Gate decision.
     severities = [f.severity for f in findings]
     if cfg.should_fail(severities):
@@ -145,6 +184,49 @@ def cmd_build_kb(args) -> int:
     return 0
 
 
+def cmd_trends(args) -> int:
+    repo_path = os.path.abspath(args.repo)
+    repo = os.path.basename(repo_path)
+    # Resolve the DB the same way `review` does so both see the same history
+    # (honours PERF_GATE_DB_URL / PERF_GATE_DB_PATH and the perf-gate.yml path).
+    cfg = config_mod.load(repo_path)
+    store = Store(url=config_mod.Config.db_url(),
+                  sqlite_path=cfg.history.get("sqlite_path", ".perf-gate/history.db"))
+    try:
+        store.connect()
+    except Exception as e:  # noqa: BLE001
+        print(f"History database unavailable: {e}")
+        return 1
+    runs = store.run_history(repo, limit=args.limit)
+    fr = store.fix_rate(repo)
+    if not runs:
+        print(f"No recorded runs for '{repo}' yet. Run "
+              f"`perf-gate review --all --record` first.")
+        store.close()
+        return 0
+
+    print(f"Performance Gate — history for '{repo}'\n")
+    print(f"{'run':>4}  {'when (UTC)':<20} {'commit':<9} {'tot':>3} "
+          f"{'crit':>4} {'high':>4} {'med':>3} {'+new':>4} {'-fix':>4}")
+    print("-" * 66)
+    for r in runs:
+        when = r["ts"].replace("T", " ").replace("+00:00", "")
+        print(f"{r['id']:>4}  {when:<20} {(r['commit_sha'] or '-'):<9} "
+              f"{r['total']:>3} {r['critical']:>4} {r['high']:>4} {r['medium']:>3} "
+              f"{r['introduced']:>4} {r['fixed']:>4}")
+    print("-" * 66)
+    print(f"\nFix-rate to date: {fr['resolved']}/{fr['distinct']} distinct findings "
+          f"resolved ({fr['fix_rate']*100:.0f}%). {fr['open']} still open "
+          f"across {fr['runs']} run(s).")
+
+    if args.html:
+        with open(args.html, "w") as fh:
+            fh.write(report_mod.trends_to_html(repo, runs, fr))
+        print(f"\nHTML trend report written to {args.html}")
+    store.close()
+    return 0
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="perf-gate", description="Static performance review gate.")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -159,7 +241,17 @@ def main(argv=None) -> int:
     r.add_argument("--model", default="", help="Ollama/LLM model to use, e.g. llama3.1:latest "
                                                "(overrides perf-gate.yml and PERF_GATE_MODEL)")
     r.add_argument("--no-llm", action="store_true", help="Skip Stage 2; run static rules only")
+    r.add_argument("--record", action="store_true",
+                   help="Record this run into the local history DB (findings over time)")
+    r.add_argument("--jira", action="store_true",
+                   help="Create Jira tickets for high-severity findings (dry-run without creds)")
     r.set_defaults(func=cmd_review)
+
+    t = sub.add_parser("trends", help="Show findings history + fix-rate trend from the DB.")
+    t.add_argument("--repo", default=".", help="Repo whose history to show (default: .)")
+    t.add_argument("--limit", type=int, default=20, help="How many recent runs to show")
+    t.add_argument("--html", default="", help="Also write a self-contained HTML trend report")
+    t.set_defaults(func=cmd_trends)
 
     b = sub.add_parser("build-kb", help="Build a local KB index from a reference PDF.")
     b.add_argument("pdf", help="Path to your reference PDF (kept local, never committed)")

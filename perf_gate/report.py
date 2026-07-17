@@ -183,6 +183,95 @@ def to_html(findings: List[Finding], llm_used: bool, repo_name: str = "") -> str
 </div></body></html>"""
 
 
+def trends_to_html(repo_name: str, runs: List[dict], fix_rate: dict) -> str:
+    """Self-contained HTML trend report for stakeholders: fix-rate headline, a
+    per-run bar chart (inline SVG, no JS), and a run table. `runs` is newest-first
+    as returned by Store.run_history; `fix_rate` is Store.fix_rate()."""
+    chron = list(reversed(runs))  # oldest -> newest for the chart
+    max_total = max([r["total"] for r in chron] + [1])
+    bw, gap, ch = 26, 10, 150
+    bars = []
+    for i, r in enumerate(chron):
+        h = int((r["total"] / max_total) * (ch - 20)) if max_total else 0
+        x = i * (bw + gap)
+        y = ch - h
+        crit_h = int((r["critical"] / max(r["total"], 1)) * h) if r["total"] else 0
+        bars.append(
+            f'<rect x="{x}" y="{y}" width="{bw}" height="{h}" fill="#4b74d4" rx="2"/>'
+            f'<rect x="{x}" y="{y}" width="{bw}" height="{crit_h}" fill="#b3141d" rx="2"/>'
+            f'<text x="{x + bw/2:.0f}" y="{ch + 12}" font-size="9" fill="#888" '
+            f'text-anchor="middle">{html.escape((r["commit_sha"] or str(r["id"]))[:6])}</text>'
+            f'<text x="{x + bw/2:.0f}" y="{y - 3}" font-size="9" fill="#888" '
+            f'text-anchor="middle">{r["total"]}</text>')
+    chart_w = max(len(chron) * (bw + gap), 60)
+    svg = (f'<svg width="{chart_w}" height="{ch + 20}" viewBox="0 0 {chart_w} {ch + 20}" '
+           f'role="img" aria-label="Findings per run">{"".join(bars)}</svg>')
+
+    pct = f"{fix_rate['fix_rate']*100:.0f}%"
+    rows = []
+    for r in runs:
+        when = html.escape(r["ts"].replace("T", " ").replace("+00:00", ""))
+        rows.append(
+            f"<tr><td>#{r['id']}</td><td>{when}</td>"
+            f"<td class='mono'>{html.escape(r['commit_sha'] or '-')}</td>"
+            f"<td>{r['total']}</td><td class='crit'>{r['critical']}</td>"
+            f"<td class='high'>{r['high']}</td><td>{r['medium']}</td>"
+            f"<td class='pos'>+{r['introduced']}</td><td class='neg'>-{r['fixed']}</td></tr>")
+
+    return f"""<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{html.escape('Performance Gate trends - ' + repo_name)}</title>
+<style>
+  :root {{ color-scheme: light dark; }}
+  * {{ box-sizing: border-box; }}
+  body {{ font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+         margin:0; background:#f4f5f7; color:#1a1a1a; }}
+  .wrap {{ max-width:900px; margin:0 auto; padding:28px 20px 60px; }}
+  h1 {{ font-size:22px; margin:0 0 16px; }}
+  .kpis {{ display:flex; gap:12px; flex-wrap:wrap; margin-bottom:20px; }}
+  .kpi {{ background:#fff; border-radius:8px; padding:14px 18px; min-width:120px;
+         box-shadow:0 1px 3px rgba(0,0,0,.08); }}
+  .kpi .n {{ font-size:26px; font-weight:700; }}
+  .kpi .l {{ font-size:12px; color:#666; text-transform:uppercase; letter-spacing:.04em; }}
+  .panel {{ background:#fff; border-radius:8px; padding:18px; margin-bottom:18px;
+           box-shadow:0 1px 3px rgba(0,0,0,.08); overflow-x:auto; }}
+  h2 {{ font-size:14px; margin:0 0 12px; color:#444; }}
+  table {{ border-collapse:collapse; width:100%; font-size:13px; }}
+  th,td {{ text-align:left; padding:6px 10px; border-bottom:1px solid #eee; }}
+  th {{ color:#666; font-weight:600; font-size:11.5px; text-transform:uppercase; }}
+  .mono {{ font-family:ui-monospace,Menlo,Consolas,monospace; }}
+  .crit {{ color:#b3141d; font-weight:600; }} .high {{ color:#d9640a; }}
+  .pos {{ color:#b3141d; }} .neg {{ color:#1c7c33; }}
+  .legend {{ font-size:11.5px; color:#777; margin-top:8px; }}
+  .sw {{ display:inline-block; width:10px; height:10px; border-radius:2px; vertical-align:middle; }}
+  .foot {{ margin-top:20px; font-size:11.5px; color:#888; text-align:center; }}
+  @media (prefers-color-scheme: dark) {{
+    body {{ background:#0d1117; color:#e6edf3; }}
+    .kpi,.panel {{ background:#161b22; box-shadow:none; border:1px solid #232a33; }}
+    .kpi .l,h2,th {{ color:#9aa4b0; }} th,td {{ border-color:#232a33; }}
+  }}
+</style></head><body><div class="wrap">
+  <h1>Performance Gate — trends for {html.escape(repo_name)}</h1>
+  <div class="kpis">
+    <div class="kpi"><div class="n">{pct}</div><div class="l">Fix rate</div></div>
+    <div class="kpi"><div class="n">{fix_rate['resolved']}</div><div class="l">Resolved</div></div>
+    <div class="kpi"><div class="n">{fix_rate['open']}</div><div class="l">Still open</div></div>
+    <div class="kpi"><div class="n">{fix_rate['runs']}</div><div class="l">Runs tracked</div></div>
+  </div>
+  <div class="panel"><h2>Findings per run (newest at right)</h2>{svg}
+    <div class="legend"><span class="sw" style="background:#4b74d4"></span> total
+      &nbsp;&nbsp;<span class="sw" style="background:#b3141d"></span> of which critical</div>
+  </div>
+  <div class="panel"><h2>Run history</h2>
+    <table><thead><tr><th>Run</th><th>When (UTC)</th><th>Commit</th><th>Total</th>
+    <th>Crit</th><th>High</th><th>Med</th><th>New</th><th>Fixed</th></tr></thead>
+    <tbody>{''.join(rows)}</tbody></table>
+  </div>
+  <div class="foot">Generated by Performance Gate - static, on-prem performance review. Data stored locally; nothing left the network.</div>
+</div></body></html>"""
+
+
 def write_step_summary(markdown: str) -> None:
     """Append to the GitHub Actions job summary if running in Actions."""
     path = os.environ.get("GITHUB_STEP_SUMMARY")
