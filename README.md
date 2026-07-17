@@ -78,7 +78,25 @@ perf-gate review --all
 
 # Write machine-readable findings too
 perf-gate review --json findings.json
+
+# Write a self-contained HTML report for stakeholders (open in any browser)
+perf-gate review --html perf-report.html
 ```
+
+### Languages covered
+
+| Language / stack | Extensions | Examples of what it catches |
+|---|---|---|
+| Java / Spring / JPA | `.java` | N+1 queries, `LAZY→EAGER`, string concat in loops, unbounded pools |
+| Python | `.py` | N+1, nested-loop O(n²), blocking I/O in async, connection-per-iter |
+| SQL | `.sql` | `SELECT *`, non-sargable predicates, leading-wildcard `LIKE`, cartesian joins |
+| C# / .NET / EF Core | `.cs` | EF Core N+1, LINQ re-materialized in loops, sync-over-async (`.Result`/`.Wait`), lazy-loading proxies |
+| C / C++ | `.c` `.h` `.cpp` `.cc` `.hpp` | `malloc` in loops, `strlen` in loop conditions (O(n²)), `strcat` in loops, process spawn in loops |
+| React / TypeScript | `.ts` `.tsx` `.js` `.jsx` | timer/listener leaks, inline handlers, un-virtualized lists |
+| Node.js / Next.js / Angular | `.ts` `.tsx` `.js` `.jsx` `.mjs` `.cjs` | sync `fs`/crypto blocking the event loop, `await` in loops (N+1), Next.js uncached `fetch`, `*ngFor` without `trackBy` |
+
+Adding another language is a single new file under `perf_gate/detectors/` plus one
+line in the extension map — the engine, gate, LLM stage and reports are shared.
 
 Exit code is non-zero when the gate trips (`fail_on` severity or above), so it
 can block a merge/deploy in CI.
@@ -150,6 +168,23 @@ local server (vLLM) or an Azure OpenAI **private endpoint** later, set
 - It does **not** connect to a database or read production/customer data.
 - It does **not** send code or diffs to any external service.
 
+### Why a reviewed repo can't redirect it (data-exfiltration guard)
+
+Because this runs on **every push over code you don't fully control**, the tool
+treats the reviewed repo as untrusted for anything that decides *where data goes*:
+
+- The **LLM endpoint** (`backend`, `base_url`, host, API key) can only be set by the
+  **operator** — via real environment variables on the runner, or the agent's own
+  `.env`. A `perf-gate.yml` or `.env` committed *inside the scanned repo* can never
+  change the endpoint; those values are forced back to the safe local default.
+- `.env` is read **only** from the agent's own folder (or an explicit
+  `PERF_GATE_ENV_FILE` path), **never** from the scanned repo or the working dir,
+  and only a safe allow-list of keys (`PERF_GATE_MODEL`, `PERF_GATE_LLM_DISABLED`,
+  `PERF_GATE_FAIL_ON`) is honoured.
+- Git revisions are validated so a crafted `--base`/`--head` can't be read as a git
+  option (argument-injection guard), and all git calls use argument lists — no shell.
+- Config is parsed with `yaml.safe_load`; there is no `eval`/`exec`/`pickle`.
+
 Runtime load/regression testing catches more but needs a test environment and
 representative (synthetic) data — a sensible **later** phase. This gate is the
 cheap, safe first line that would have caught the incident above.
@@ -163,13 +198,16 @@ perf_gate/
   cli.py                 # entry point: review / build-kb
   diff.py                # git diff -> changed files + changed line ranges
   config.py              # perf-gate.yml + env, gate policy
-  report.py              # Markdown / JSON, commit-comment + job summary
+  report.py              # Markdown / JSON / HTML, commit-comment + job summary
   detectors/
     base.py              # Finding + loop-scope scanner
     java_rules.py        # Java / Spring / JPA detectors
     python_rules.py      # Python detectors
     sql_rules.py         # SQL detectors
     frontend_rules.py    # React / TS detectors
+    csharp_rules.py      # C# / .NET / EF Core detectors
+    c_rules.py           # C / C++ detectors
+    node_rules.py        # Node.js / Next.js / Angular detectors
   knowledge/
     kb.py                # built-in rulebook + local PDF index + TF-IDF retriever
   llm/

@@ -114,6 +114,10 @@ def _scan_python(lines: List[str]) -> List[LineInfo]:
 
 
 def _starts_loop_bracey(stripped: str) -> bool:
+    # foreach (C#) / forEach must be recognised as loops too. Check them first
+    # since "foreach" also begins with "for".
+    if stripped.startswith("foreach") and (stripped[7:8] in (" ", "(", "")):
+        return True
     for kw in ("for", "while", "do"):
         if stripped == kw or stripped.startswith(kw + " ") or stripped.startswith(kw + "("):
             # Avoid matching identifiers like "form" - handled by the char after kw.

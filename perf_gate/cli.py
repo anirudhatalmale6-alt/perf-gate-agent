@@ -44,6 +44,11 @@ def _collect_all_files(repo: str) -> Dict[str, str]:
 def cmd_review(args) -> int:
     repo = os.path.abspath(args.repo)
     cfg = config_mod.load(repo)
+    # CLI overrides win over perf-gate.yml / env so switching models is one flag.
+    if getattr(args, "model", ""):
+        cfg.llm["model"] = args.model
+    if getattr(args, "no_llm", False):
+        cfg.llm["enabled"] = False
 
     # 1. Determine the review surface (changed lines, or the whole repo with --all).
     sources: Dict[str, str] = {}
@@ -83,7 +88,9 @@ def cmd_review(args) -> int:
 
     # 3. Stage 2 - local LLM confirmation + KB grounding (optional, graceful).
     llm_used = False
-    if cfg.llm.get("enabled", True) and findings:
+    if not cfg.llm.get("enabled", True):
+        print("Stage 2 (local LLM): disabled by config/env - running static rules only.")
+    elif findings:
         client = LLMClient(
             backend=cfg.llm.get("backend", "ollama"),
             model=cfg.llm.get("model", "qwen2.5-coder:7b"),
@@ -91,12 +98,19 @@ def cmd_review(args) -> int:
             timeout=int(cfg.llm.get("timeout", 60)),
         )
         if client.available():
+            print(f"Stage 2 (local LLM): using {client.backend} model "
+                  f"'{client.model}' at {client.base_url} - confirming "
+                  f"{len(findings)} finding(s)...")
             kb = kb_mod.load(os.path.join(repo, cfg.kb_index_path))
             findings = llm_review(findings, sources, kb, client,
                                   max_findings=int(cfg.llm.get("max_findings", 40)))
             llm_used = True
             # Drop findings the model judged clear false positives.
             findings = [f for f in findings if f.confirmed is not False]
+        else:
+            print(f"Stage 2 (local LLM): {client.backend} not reachable at "
+                  f"{client.base_url} - running static rules only. "
+                  f"Start it with `ollama serve` and pull the model.")
 
     # 4. Report.
     markdown = report_mod.to_markdown(findings, llm_used)
@@ -106,6 +120,10 @@ def cmd_review(args) -> int:
     if args.json:
         with open(args.json, "w") as fh:
             fh.write(report_mod.to_json(findings, llm_used))
+    if getattr(args, "html", ""):
+        with open(args.html, "w") as fh:
+            fh.write(report_mod.to_html(findings, llm_used, os.path.basename(repo)))
+        print(f"\nHTML report written to {args.html}")
 
     # 5. Gate decision.
     severities = [f.severity for f in findings]
@@ -137,6 +155,10 @@ def main(argv=None) -> int:
     r.add_argument("--head", default=os.environ.get("PERF_GATE_HEAD", ""), help="Head SHA")
     r.add_argument("--all", action="store_true", help="Scan every file, not just the diff")
     r.add_argument("--json", default="", help="Also write JSON findings to this path")
+    r.add_argument("--html", default="", help="Also write a self-contained HTML report to this path")
+    r.add_argument("--model", default="", help="Ollama/LLM model to use, e.g. llama3.1:latest "
+                                               "(overrides perf-gate.yml and PERF_GATE_MODEL)")
+    r.add_argument("--no-llm", action="store_true", help="Skip Stage 2; run static rules only")
     r.set_defaults(func=cmd_review)
 
     b = sub.add_parser("build-kb", help="Build a local KB index from a reference PDF.")

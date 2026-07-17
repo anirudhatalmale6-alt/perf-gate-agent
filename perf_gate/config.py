@@ -70,19 +70,86 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return out
 
 
+# Only these keys may be set from a .env file. Deliberately EXCLUDES anything that
+# could redirect where data goes (endpoint host, backend, base URL, tokens) so a
+# .env can tune behaviour but never point the tool off-box.
+_DOTENV_ALLOWED = {
+    "PERF_GATE_MODEL",
+    "PERF_GATE_LLM_DISABLED",
+    "PERF_GATE_FAIL_ON",
+}
+
+
+def _apply_dotenv(repo_root: str) -> None:
+    """Load KEY=VALUE lines from a .env file so settings live in one editable
+    file - no command-line flags or manual `export`/`$env:` needed.
+
+    SECURITY: this tool runs on every push over code we do not control, so a .env
+    sitting *inside the reviewed repo* must never be trusted - otherwise a repo
+    could set the LLM endpoint and quietly exfiltrate the code snippets we send to
+    Stage 2. We therefore read .env ONLY from operator-controlled locations:
+      1. the agent's own install folder (where you edit perf-gate-agent/.env), and
+      2. an explicit path in the real env var PERF_GATE_ENV_FILE (a repo cannot set
+         this - it is read from the process environment, not from any .env).
+    We never read .env from the reviewed repo or the current working directory, and
+    even then only a safe allow-list of keys is honoured (never host/backend/token).
+    """
+    agent_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    candidates = [os.path.join(agent_root, ".env")]
+    explicit = os.environ.get("PERF_GATE_ENV_FILE")
+    if explicit:
+        candidates.append(explicit)
+    seen = set()
+    for path in candidates:
+        real = os.path.abspath(path)
+        if real in seen or not os.path.isfile(real):
+            continue
+        seen.add(real)
+        try:
+            with open(real, "r") as fh:
+                for raw in fh:
+                    line = raw.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    key, _, val = line.partition("=")
+                    key = key.strip()
+                    if key not in _DOTENV_ALLOWED:
+                        continue  # ignore anything that could redirect data off-box
+                    # Strip surrounding quotes and any trailing inline comment.
+                    val = val.strip()
+                    if val and val[0] in ("'", '"') and val[-1:] == val[0]:
+                        val = val[1:-1]
+                    else:
+                        val = val.split(" #", 1)[0].strip()
+                    os.environ[key] = val
+        except OSError:
+            pass
+
+
 def load(repo_root: str, path: str = "perf-gate.yml") -> Config:
     cfg = dict(DEFAULTS)
+    _apply_dotenv(repo_root)
     full = os.path.join(repo_root, path)
     if yaml is not None and os.path.exists(full):
         with open(full, "r") as fh:
             user = yaml.safe_load(fh) or {}
         cfg = _deep_merge(cfg, user)
-    # Env overrides so CI can flip things without editing files.
+    # SECURITY: perf-gate.yml is read from the reviewed repo, which we do not
+    # control. The LLM endpoint (backend + base_url) decides where the code
+    # snippets in Stage 2 are sent, so a repo must NOT be able to set it - that
+    # would be a code-exfiltration channel. Force these back to the safe defaults;
+    # only the operator can change them, via the env vars handled just below.
+    cfg["llm"]["backend"] = DEFAULTS["llm"]["backend"]
+    cfg["llm"]["base_url"] = DEFAULTS["llm"]["base_url"]
+    # Env overrides (now including anything loaded from .env above).
+    if os.environ.get("PERF_GATE_BASE_URL"):
+        cfg["llm"]["base_url"] = os.environ["PERF_GATE_BASE_URL"]
     if os.environ.get("PERF_GATE_MODEL"):
         cfg["llm"]["model"] = os.environ["PERF_GATE_MODEL"]
     if os.environ.get("PERF_GATE_BACKEND"):
         cfg["llm"]["backend"] = os.environ["PERF_GATE_BACKEND"]
-    if os.environ.get("PERF_GATE_LLM_DISABLED"):
+    _disabled = os.environ.get("PERF_GATE_LLM_DISABLED")
+    if _disabled is not None and _disabled.strip().lower() in ("1", "true", "yes", "on"):
         cfg["llm"]["enabled"] = False
     if os.environ.get("PERF_GATE_FAIL_ON"):
         cfg["gate"]["fail_on"] = os.environ["PERF_GATE_FAIL_ON"]

@@ -16,8 +16,17 @@ def _run(args: List[str], cwd: str) -> str:
     return subprocess.run(args, cwd=cwd, capture_output=True, text=True, check=True).stdout
 
 
+def _safe_rev(rev: Optional[str]) -> Optional[str]:
+    """Reject anything that could be read by git as an option rather than a
+    revision (argument injection), e.g. a value starting with '-'."""
+    if rev and rev.startswith("-"):
+        return None
+    return rev
+
+
 def resolve_range(repo: str, base: Optional[str], head: Optional[str]) -> (str, str):
     """Return (base_sha, head_sha) to diff. Falls back sensibly on first push."""
+    base, head = _safe_rev(base), _safe_rev(head)
     head = head or _run(["git", "rev-parse", "HEAD"], repo).strip()
     if base and base not in ("", "0000000000000000000000000000000000000000"):
         # Verify the base commit actually exists locally (shallow clones may miss it).
@@ -36,7 +45,8 @@ def resolve_range(repo: str, base: Optional[str], head: Optional[str]) -> (str, 
 
 def changed_line_ranges(repo: str, base: str, head: str) -> Dict[str, Set[int]]:
     """Map each changed file to the set of line numbers added/modified on the head side."""
-    out = _run(["git", "diff", "--unified=0", "--no-color", base, head], repo)
+    out = _run(["git", "diff", "--unified=0", "--no-color",
+                _safe_rev(base) or EMPTY_TREE, _safe_rev(head) or "HEAD", "--"], repo)
     ranges: Dict[str, Set[int]] = {}
     current: Optional[str] = None
     for line in out.split("\n"):
